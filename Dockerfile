@@ -1,29 +1,35 @@
-FROM python:3.13-slim
+# First, build the application in the `/app` directory.
+# See `Dockerfile` for details.
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-# Install server dependencies
-RUN pip install --no-cache-dir "mcp[cli]>=1.7.1" "edgartools" "packaging" "requests" "python-dotenv"
+# Disable Python downloads, because we want to use the system interpreter
+# across both images. If using a managed Python version, it needs to be
+# copied from the build image into the final image; see `standalone.Dockerfile`
+# for an example.
+ENV UV_PYTHON_DOWNLOADS=0
 
-# Copy source
 WORKDIR /app
-COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project --no-dev
+COPY . /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev
 
-# Ensure local package is discoverable
-ENV PYTHONPATH=/app
 
-# The server requires NASDAQ_DATA_LINK_API_KEY to be set at runtime
-# Example mcpServers config for your client:
-# 
-# "mcpServers": {
-#   "sec-edgar-mcp": {
-#     "command": "docker",
-#     "args": [
-#       "run",
-#       "--rm",
-#       "-i",
-#       "-e", "SEC_EDGAR_USER_AGENT=<First Name, Last name (your@email.com)>",
-#       "stefanoamorelli/sec-edgar-mcp:latest"
-#     ]
-#   }
-# }
+# Then, use a final image without uv
+FROM python:3.12-slim-bookworm
+# It is important to use the image that matches the builder, as the path to the
+# Python executable must be the same, e.g., using `python:3.11-slim-bookworm`
+# will fail.
+
+# Copy the application from the builder
+WORKDIR /app
+COPY --from=builder --chown=app:app /app /app
+
+# Place executables in the environment at the front of the path
+ENV PATH="/app/.venv/bin:$PATH"
 
 CMD ["python", "sec_edgar_mcp/server.py"]
